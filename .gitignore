@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.exe
+*.spec
+build/
+dist/
+性能验证.json
+*.pcap
+*.bin
+*.apk
+*.png
+*.mp4

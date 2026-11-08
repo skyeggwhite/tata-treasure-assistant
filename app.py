@@ -1,0 +1,168 @@
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import ttk, filedialog
+import threading, queue, json, time
+from reader import Reader, ADB
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title('塔塔寻宝助手')
+        root.geometry('1180x940')
+        root.minsize(960, 800)
+        root.configure(bg='#eef2f7')
+        root.option_add('*Font', ('Microsoft YaHei UI', 14))
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('.', font=('Microsoft YaHei UI',14), background='white', foreground='#263449')
+        style.configure('TEntry', padding=7, fieldbackground='white')
+        style.configure('TButton', padding=(12,8), background='#e9eef6', borderwidth=0)
+        style.map('TButton', background=[('active','#dbe5f5')])
+        style.configure('Primary.TButton', background='#2563eb', foreground='white', font=('Microsoft YaHei UI',15,'bold'))
+        style.map('Primary.TButton', background=[('disabled','#cbd5e1'),('active','#1d4ed8')], foreground=[('disabled','#64748b')])
+        self.events = queue.Queue()
+        self.busy = False
+        self.request_id = 0
+        self.data = None
+        self.serial = tk.StringVar(value='127.0.0.1:16384')
+        self.adb = tk.StringVar(value=ADB)
+        self.auto = tk.BooleanVar()
+        self.status = tk.StringVar(value='等待读取')
+        self.detail = tk.StringVar(value='把鼠标移到地块上，可查看坐标和状态。')
+        header=tk.Frame(root,bg='#eef2f7')
+        header.pack(fill='x',padx=28,pady=(22,16))
+        tk.Label(header,text='塔塔寻宝助手',bg='#eef2f7',fg='#17243a',font=('Microsoft YaHei UI',30,'bold')).pack(side='left')
+        tk.Label(header,text='塔塔冒险队 · MuMu',bg='#eef2f7',fg='#64748b',font=('Microsoft YaHei UI',15)).pack(side='left',padx=18)
+        panel=tk.Frame(root,bg='white',padx=20,pady=16)
+        panel.pack(fill='x',padx=28)
+        tk.Label(panel,text='使用流程',bg='white',fg='#17243a',font=('Microsoft YaHei UI',17,'bold')).pack(anchor='w')
+        tk.Label(panel,text='① 开启模拟器 root，进入游戏的寻宝地图。\n② 点击“读取 / 刷新地图”，下方显示当前地图的宝藏位置。\n③ 换地图或挖掘后，再次点击刷新；也可勾选自动刷新。',bg='#eff6ff',fg='#476182',font=('Microsoft YaHei UI',14),justify='left',anchor='w',padx=12,pady=10).pack(fill='x',pady=(10,12))
+        row=tk.Frame(panel,bg='white');row.pack(fill='x')
+        tk.Label(row,text='模拟器地址',bg='white',fg='#263449').pack(side='left')
+        ttk.Entry(row,textvariable=self.serial,width=20).pack(side='left',padx=10)
+        self.refresh=ttk.Button(row,text='读取 / 刷新地图',style='Primary.TButton',command=self.load)
+        self.refresh.pack(side='left',padx=5)
+        ttk.Button(row,text='导出 JSON',command=self.export).pack(side='left',padx=5)
+        ttk.Checkbutton(row,text='每 10 秒刷新',variable=self.auto).pack(side='left',padx=10)
+        path=tk.Frame(panel,bg='white');path.pack(fill='x',pady=(12,0))
+        tk.Label(path,text='ADB 路径',bg='white',fg='#64748b').pack(side='left')
+        ttk.Entry(path,textvariable=self.adb).pack(side='left',fill='x',expand=True,padx=10)
+        ttk.Button(path,text='选择',command=self.browse).pack(side='left')
+        tk.Label(root,textvariable=self.status,anchor='w',justify='left',wraplength=1080,bg='#dbeafe',fg='#1d4ed8',padx=14,pady=10).pack(fill='x',padx=28,pady=12)
+        board=tk.Frame(root,bg='white',padx=16,pady=12);board.pack(fill='both',expand=True,padx=28)
+        tk.Label(board,text='地图预览    ● 黄色：宝藏    ● 灰色：待判定    ✓ 已翻开',bg='white',fg='#475569',anchor='w',font=('Microsoft YaHei UI',14)).pack(fill='x',pady=(0,8))
+        self.canvas=tk.Canvas(board,bg='#f8fafc',highlightthickness=0)
+        self.canvas.pack(fill='both',expand=True)
+        self.canvas.bind('<Configure>',lambda e:self.draw())
+        self.canvas.bind('<Motion>',self.hover)
+        tk.Label(board,textvariable=self.detail,bg='white',fg='#476182',anchor='w').pack(fill='x',pady=(8,0))
+        tk.Label(root,text='需要 root · 只读预览，不自动挖掘 · 炸弹尚未判定\n会话验证版：游戏重启后需重新定位；换地图后可以反复刷新。',bg='#eef2f7',fg='#64748b',justify='left',anchor='w',font=('Microsoft YaHei UI',12)).pack(fill='x',padx=28,pady=(12,18))
+        root.after(100,self.poll)
+        root.after(10000,self.tick)
+
+    def browse(self):
+        path = filedialog.askopenfilename(filetypes=[('ADB','adb.exe')])
+        if path:self.adb.set(path)
+
+    def load(self):
+        if self.busy:return
+        self.busy = True
+        self.request_id += 1
+        request_id = self.request_id
+        self.root.after(45000, lambda:self.timeout(request_id))
+        self.data = None
+        self.draw()
+        self.refresh.state(['disabled'])
+        self.status.set('正在检查模拟器、root 和地图数据…')
+        adb, serial = self.adb.get(), self.serial.get()
+        def work():
+            try:self.events.put((request_id, True, Reader(adb,serial).read()))
+            except Exception as exc:self.events.put((request_id, False,str(exc)))
+        threading.Thread(target=work,daemon=True).start()
+
+    def poll(self):
+        try:
+            request_id, ok, result = self.events.get_nowait()
+            if request_id != self.request_id:
+                self.root.after(100,self.poll)
+                return
+            self.busy = False
+            self.refresh.state(['!disabled'])
+            if ok:
+                self.data = result
+                self.status.set(f'第 {result["board"]} 关 · {result["width"]}×{result["height"]} · {result["treasure_count"]} 件宝藏 · 耗时 {result.get("read_seconds",0)} 秒 · 更新于 {time.strftime("%H:%M:%S")}')
+            else:self.status.set('读取失败：'+result)
+            self.draw()
+        except queue.Empty:pass
+        self.root.after(100,self.poll)
+
+    def tick(self):
+        if self.auto.get():self.load()
+        self.root.after(10000,self.tick)
+
+    def timeout(self, request_id):
+        if self.busy and request_id == self.request_id:
+            self.request_id += 1
+            self.busy = False
+            self.refresh.state(['!disabled'])
+            self.status.set('读取超时，可再次点击刷新。请检查模拟器连接和 root 状态。')
+
+    def draw(self):
+        c=self.canvas
+        c.delete('all')
+        if not self.data:
+            c.create_text(c.winfo_width()/2,c.winfo_height()/2,text='进入寻宝地图后，点击上方读取按钮',fill='#64748b',font=('Microsoft YaHei UI',16))
+            return
+        d=self.data
+        size=max(1,min((c.winfo_width()-60)/d['width'],(c.winfo_height()-48)/d['height']))
+        left=(c.winfo_width()-size*d['width'])/2
+        top=(c.winfo_height()-size*d['height'])/2+8
+        self.board_geometry=(left,top,size)
+        for x in range(d['width']):
+            c.create_text(left+(x+.5)*size,top-15,text=str(x+1),fill='#64748b',font=('Microsoft YaHei UI',11))
+        for y in range(d['height']):
+            c.create_text(left-18,top+(y+.5)*size,text=str(y+1),fill='#64748b',font=('Microsoft YaHei UI',11))
+        for t in d['tiles']:
+            x=left+(t['x']-1)*size;y=top+(t['y']-1)*size
+            treasure=t['treasure'];color='#fef3c7' if treasure else '#e2e8f0'
+            c.create_rectangle(x+3,y+3,x+size-3,y+size-3,fill=color,outline='#d4a72c' if treasure else '#cbd5e1',width=2)
+            # One short label per cell. Coordinates and state live outside the grid.
+            text=str(treasure) if treasure else '·'
+            # Negative font sizes use pixels, independent of Windows DPI scaling.
+            font=tkfont.Font(family='Microsoft YaHei UI',size=-max(1,int(size*.36)),weight='bold')
+            limit=max(1,size*.48)
+            while (font.measure(text)>limit or font.metrics('linespace')>size*.55) and abs(font.cget('size'))>1:
+                font.configure(size=font.cget('size')+1)
+            c.create_text(x+size/2,y+size/2,text=text,fill='#92400e' if treasure else '#64748b',font=font)
+            if t['flipped']:
+                # Draw the state mark in its own inset corner; no glyph overflow.
+                inset=max(5,size*.10);mark=size*.18
+                mx=x+size-inset-mark;my=y+inset
+                c.create_line(mx,my+mark*.55,mx+mark*.35,my+mark,mx+mark,my,
+                              fill='#15803d',width=max(1,size*.035),capstyle='round',joinstyle='round')
+
+    def hover(self,event):
+        if not self.data or not hasattr(self,'board_geometry'):return
+        left,top,size=self.board_geometry
+        x=int((event.x-left)//size)+1;y=int((event.y-top)//size)+1
+        t=next((t for t in self.data['tiles'] if t['x']==x and t['y']==y),None)
+        if t:
+            content=f'宝藏 {t["treasure"]}' if t['treasure'] else '无宝藏编号，炸弹 / 空地待判定'
+            self.detail.set(f'第 {y} 行 · 第 {x} 列    {content}    {"已翻开" if t["flipped"] else "未翻开"}')
+
+    def export(self):
+        if not self.data:
+            self.status.set('请先成功读取地图再导出。')
+            return
+        path=filedialog.asksaveasfilename(defaultextension='.json',initialfile=f'寻宝第{self.data["board"]}关.json',filetypes=[('JSON','*.json')])
+        if path:
+            with open(path,'w',encoding='utf-8') as f:json.dump(self.data,f,ensure_ascii=False,indent=2)
+
+if __name__=='__main__':
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:pass
+    root=tk.Tk()
+    App(root)
+    root.mainloop()
