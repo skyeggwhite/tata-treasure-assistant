@@ -2,16 +2,15 @@ import subprocess, struct, time
 
 PACKAGE = 'com.lilithgame.pgame.android.cn'
 ADB = r'C:\Program Files\NetEase\MuMu Player 12\shell\adb.exe'
-# Verified session locator. Rebinding after process restart is not implemented yet.
-SESSION_PID = '3148'
-ED_TABLE = 0x79a39199be80
-CONTROLLER = 0x79a392abf9f0
+from locator import locate
 
 class Reader:
     def __init__(self, adb=ADB, serial='127.0.0.1:16384'):
         self.base = [adb, '-s', serial]
         self.cache = {}
         self.calls = 0
+        self.controller = None
+        self.session = None
 
     def prefetch(self, addresses):
         pages = sorted({a & ~65535 for a in addresses if 0x10000 < a < 0x800000000000} - self.cache.keys())
@@ -104,14 +103,26 @@ class Reader:
         self.calls = 0
         self.cache.clear()
         self.pid = self.command(['shell', 'pidof', PACKAGE]).decode().strip()
-        if self.pid != SESSION_PID:
-            raise RuntimeError('游戏进程已变化。本版绑定已验证会话，重启后需要重新定位；请勿使用旧地图。')
+        if not self.pid.isdigit():
+            raise RuntimeError('请先启动游戏并进入寻宝地图')
         if 'uid=0' not in self.command(['shell', 'su -c "id"']).decode():
             raise RuntimeError('请开启模拟器 root 权限')
-        # Validated session instance: avoid decoding all 2660 unrelated ed entries.
-        controller = self.table(CONTROLLER)
-        if 'huntModel' not in controller or 'HuntNet' not in controller:
-            raise RuntimeError('活动实例校验失败，需要重新定位')
+        # Start time prevents reusing a locator when a PID has been recycled.
+        stat = self.command(['exec-out','su -c "cat /proc/'+self.pid+'/stat"']).decode()
+        session = (self.pid,stat.rsplit(')',1)[1].split()[19])
+        if session != self.session:
+            self.controller = None
+            self.session = session
+        if self.controller is None:
+            self.controller = locate(self)
+        try:
+            controller = self.table(self.controller)
+            if 'huntModel' not in controller or 'HuntNet' not in controller:
+                raise RuntimeError('活动实例校验失败')
+        except (RuntimeError, struct.error):
+            self.cache.clear()
+            self.controller = locate(self)
+            controller = self.table(self.controller)
         model = self.table(controller['huntModel'][0])
         board = self.table(model['boardData'][0])
         width, height = board['width'][0], board['height'][0]

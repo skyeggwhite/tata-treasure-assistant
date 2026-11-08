@@ -24,6 +24,8 @@ class App:
         self.busy = False
         self.request_id = 0
         self.data = None
+        self.reader = None
+        self.reader_config = None
         self.serial = tk.StringVar(value='127.0.0.1:16384')
         self.adb = tk.StringVar(value=ADB)
         self.auto = tk.BooleanVar()
@@ -56,7 +58,7 @@ class App:
         self.canvas.bind('<Configure>',lambda e:self.draw())
         self.canvas.bind('<Motion>',self.hover)
         tk.Label(board,textvariable=self.detail,bg='white',fg='#476182',anchor='w').pack(fill='x',pady=(8,0))
-        tk.Label(root,text='需要 root · 只读预览，不自动挖掘 · 炸弹尚未判定\n会话验证版：游戏重启后需重新定位；换地图后可以反复刷新。',bg='#eef2f7',fg='#64748b',justify='left',anchor='w',font=('Microsoft YaHei UI',12)).pack(fill='x',padx=28,pady=(12,18))
+        tk.Label(root,text='需要 root · 只读预览，不自动挖掘 · 炸弹尚未判定\n启动或重启后自动定位，首次读取较慢；换地图可直接刷新。仅适配当前已验证游戏版本。',bg='#eef2f7',fg='#64748b',justify='left',anchor='w',font=('Microsoft YaHei UI',12)).pack(fill='x',padx=28,pady=(12,18))
         root.after(100,self.poll)
         root.after(10000,self.tick)
 
@@ -69,14 +71,18 @@ class App:
         self.busy = True
         self.request_id += 1
         request_id = self.request_id
-        self.root.after(45000, lambda:self.timeout(request_id))
+        self.root.after(180000, lambda:self.timeout(request_id))
         self.data = None
         self.draw()
         self.refresh.state(['disabled'])
         self.status.set('正在检查模拟器、root 和地图数据…')
         adb, serial = self.adb.get(), self.serial.get()
+        if self.reader_config != (adb,serial):
+            self.reader = Reader(adb,serial)
+            self.reader_config = (adb,serial)
+        reader = self.reader
         def work():
-            try:self.events.put((request_id, True, Reader(adb,serial).read()))
+            try:self.events.put((request_id, True, reader.read()))
             except Exception as exc:self.events.put((request_id, False,str(exc)))
         threading.Thread(target=work,daemon=True).start()
 
@@ -104,6 +110,8 @@ class App:
         if self.busy and request_id == self.request_id:
             self.request_id += 1
             self.busy = False
+            self.reader = None
+            self.reader_config = None
             self.refresh.state(['!disabled'])
             self.status.set('读取超时，可再次点击刷新。请检查模拟器连接和 root 状态。')
 
