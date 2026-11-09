@@ -9,9 +9,12 @@ def locate(reader):
         start, end = [int(v,16) for v in parts[0].split('-')]
         if parts[1] == 'rw-p' and len(parts) == 5 and 65536 <= end-start <= 8*1048576:
             regions.append((start,end))
-    regions.sort(key=lambda r:r[1]-r[0],reverse=True)
+    # Unity runtime allocation arenas are aligned to 16 MiB. Scanning arbitrary
+    # large anonymous blocks first exhausted the budget after a long session.
+    regions.sort(key=lambda r:(r[0] % (16*1048576) != 0, -(r[1]-r[0])))
     budget = 256*1048576
     scanned = 0
+    errors = []
     for start,end in regions:
         if scanned+end-start > budget:
             continue
@@ -55,7 +58,8 @@ def locate(reader):
                 if controller[1] != 69 or 'huntModel' not in reader.table(controller[0]):
                     raise ValueError('controller mismatch')
                 return controller[0]
-            except (RuntimeError,ValueError,KeyError,struct.error):
-                pass
+            except (RuntimeError,ValueError,KeyError,struct.error) as exc:
+                errors.append(str(exc))
             pos = data.find(b'LuaClient\0',pos+10)
+    reader.locator_errors = errors
     raise RuntimeError('未找到兼容的 Lua 状态。请进入寻宝地图；当前仅支持已验证游戏版本的 MuMu。')
