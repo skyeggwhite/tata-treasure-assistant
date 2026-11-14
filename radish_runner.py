@@ -38,29 +38,36 @@ class RadishRunner:
         probes = 0
         d = self.read()
         while not self.stop.is_set() and probes < 6:
-            d = self.read()
             if d['game_over'] or d['energy'] <= 0:
                 return d
             before = d
             target = (d['target_x'],d['target_y'])
-            for _ in range(12):
+            pans = 0
+            align_started = time.monotonic()
+            while pans < 12 and time.monotonic()-align_started < 30:
                 if self.stop.is_set():return d
                 if (d['energy'],d['found']) != (before['energy'],before['found']):
                     raise RuntimeError('探测数据在瞄准期间变化，已停止，避免与手动操作冲突')
                 if (d['target_x'],d['target_y']) != target:
                     raise RuntimeError('目标在瞄准期间变化，已停止')
+                if d['moving']:
+                    # Read settled feedback before calculating another drag.
+                    self.stop.wait(.25)
+                    d = self.read()
+                    continue
                 if self.aligned(d):
-                    self.stop.wait(.8)
+                    self.stop.wait(.2)
                     d = self.read()
                     if self.aligned(d) and d['can_probe']:break
                     continue
                 dx = -(d['target_world_x']-d['camera_x'])*self.height/(2*d['camera_size'])
                 dy = (d['target_world_y']-d['camera_y'])*self.height/(2*d['camera_size'])
-                limit = self.width*.32
+                limit = self.width*.40
                 factor = min(1,limit/max(1,abs(dx),abs(dy)))
                 x,y = self.width*.5,self.height*(850/1920)
-                self.input('swipe',round(x),round(y),round(x+dx*factor),round(y+dy*factor),600)
-                self.stop.wait(1)
+                self.input('swipe',round(x),round(y),round(x+dx*factor),round(y+dy*factor),400)
+                pans += 1
+                self.stop.wait(.25)
                 d = self.read()
             else:
                 raise RuntimeError('瞄准未收敛，未按 GO。请停止拖动地图并重新读取')
@@ -79,6 +86,7 @@ class RadishRunner:
                 if d['found'] > before['found']:
                     # Allow the dog/celebration animation to finish before another input.
                     self.stop.wait(4)
+                    d = self.read()
                     break
                 if d['game_over']:
                     return d
