@@ -10,3 +10,5 @@ dist/
 *.apk
 *.png
 *.mp4
+diagnostics/
+validation/

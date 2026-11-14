@@ -1,7 +1,9 @@
 """Read-only locator for the currently validated game build / Lua 5.4 layout."""
 import struct
 
-def locate(reader):
+def locate(reader, target='hunt'):
+    if target not in ('hunt','globals'):
+        raise ValueError('未知定位目标')
     maps = reader.command(['exec-out', 'su -c "cat /proc/'+reader.pid+'/maps"']).decode()
     regions = []
     for line in maps.splitlines():
@@ -53,6 +55,11 @@ def locate(reader):
                 if reader.u64(array) != native:
                     raise ValueError('main thread mismatch')
                 globals_address = reader.u64(array+16)
+                if target == 'globals':
+                    globals_table = reader.table(globals_address)
+                    if 'ed' not in globals_table or 'package' not in globals_table:
+                        raise ValueError('globals mismatch')
+                    return globals_address
                 ed = reader.table(globals_address)['ed']
                 controller = reader.table(ed[0])['HuntController']
                 if controller[1] != 69 or 'huntModel' not in reader.table(controller[0]):
